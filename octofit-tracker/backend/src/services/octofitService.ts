@@ -73,10 +73,13 @@ export async function listActivities() {
 export async function createActivity(input: unknown) {
   const activity = parseActivityInput(input);
   const [user, team] = await Promise.all([
-    User.findById(activity.userId).select('_id').lean(),
+    User.findById(activity.userId).select('_id team').lean(),
     Team.findById(activity.teamId).select('_id').lean(),
   ]);
   if (!user || !team) throw notFound('The specified user or team does not exist');
+  if (user.team?.toString() !== team._id.toString()) {
+    throw badRequest('The specified user does not belong to the specified team');
+  }
   return Activity.create({
     user: user._id,
     team: team._id,
@@ -93,12 +96,20 @@ export async function listTeams() {
 
 export async function createTeam(input: unknown) {
   const teamInput = parseTeamInput(input);
-  const members = teamInput.members ?? [];
+  const members = [...new Set(teamInput.members ?? [])];
   if (members.length > 0) {
     const existingMembers = await User.countDocuments({ _id: { $in: members } });
     if (existingMembers !== members.length) throw notFound('One or more team members do not exist');
   }
-  return Team.create({ ...teamInput, members });
+  const team = await Team.create({ ...teamInput, members });
+  if (members.length > 0) {
+    await Team.updateMany(
+      { _id: { $ne: team._id }, members: { $in: members } },
+      { $pull: { members: { $in: members } } },
+    );
+    await User.updateMany({ _id: { $in: members } }, { $set: { team: team._id } });
+  }
+  return team;
 }
 
 export async function getLeaderboard() {
